@@ -1,0 +1,104 @@
+name: Build MIZOFOX APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Create the app project
+        run: |
+          mkdir app
+          cd app
+          mkdir www assets
+          echo '<!doctype html><title>MIZOFOX</title><body style="background:#03060c"></body>' > www/index.html
+          cat > package.json <<'EOF'
+          {"name":"mizofox","version":"1.0.0","private":true,"dependencies":{"@capacitor/android":"^6.1.0","@capacitor/cli":"^6.1.0","@capacitor/core":"^6.1.0","@capacitor/local-notifications":"^6.0.0"},"devDependencies":{"@capacitor/assets":"^3.0.5"}}
+          EOF
+          cat > capacitor.config.json <<'EOF'
+          {"appId":"com.mizofox.scanner","appName":"MIZOFOX","webDir":"www","server":{"url":"https://mizofox-scanner.pages.dev","androidScheme":"https"},"plugins":{"LocalNotifications":{"smallIcon":"ic_stat_icon","iconColor":"#00E5FF"}},"android":{"backgroundColor":"#03060C"}}
+          EOF
+
+      - name: Draw the app icons
+        run: |
+          pip install pillow
+          cd app/assets
+          python3 - <<'PY'
+          from PIL import Image, ImageDraw, ImageFilter
+          S = 1024
+          def strip(size):
+              g = Image.new('RGB', (size, 1))
+              for x in range(size):
+                  t = x / (size - 1)
+                  g.putpixel((x, 0), (0, int(229 + 26 * t), int(255 - 98 * t)))
+              return g.resize((size, size))
+          def art(scale, ring):
+              m = Image.new('L', (S, S), 0)
+              d = ImageDraw.Draw(m)
+              pts = [(0.27, 0.70), (0.27, 0.30), (0.50, 0.56), (0.73, 0.30), (0.73, 0.70)]
+              pts = [(S / 2 + (x - 0.5) * S * scale, S / 2 + (y - 0.5) * S * scale) for x, y in pts]
+              w = int(S * 0.095 * scale)
+              d.line(pts, fill=255, width=w, joint='curve')
+              for x, y in (pts[0], pts[-1]):
+                  d.ellipse([x - w / 2, y - w / 2, x + w / 2, y + w / 2], fill=255)
+              r = S * ring
+              d.ellipse([S / 2 - r, S / 2 - r, S / 2 + r, S / 2 + r], outline=255, width=int(S * 0.014))
+              return m
+          def compose(bg, scale, ring):
+              base = Image.new('RGBA', (S, S), bg)
+              glow = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+              ImageDraw.Draw(glow).ellipse([S * 0.2, S * 0.2, S * 0.8, S * 0.8], fill=(0, 229, 255, 70))
+              base = Image.alpha_composite(base, glow.filter(ImageFilter.GaussianBlur(90)))
+              base.paste(strip(S), (0, 0), art(scale, ring))
+              return base
+          compose((4, 7, 13, 255), 0.62, 0.40).convert('RGB').save('icon-only.png')
+          Image.new('RGBA', (S, S), (4, 7, 13, 255)).save('icon-background.png')
+          fg = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+          fg.paste(strip(S), (0, 0), art(0.50, 0.30))
+          fg.save('icon-foreground.png')
+          PY
+
+      - name: Add Android and install tools
+        run: |
+          cd app
+          npm install
+          npx cap add android
+
+      - name: Icons, permissions and notification icon
+        run: |
+          cd app
+          npx capacitor-assets generate --android
+          sed -i 's#<application#<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n    <application#' android/app/src/main/AndroidManifest.xml
+          mkdir -p android/app/src/main/res/drawable
+          cat > android/app/src/main/res/drawable/ic_stat_icon.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M3,19V5h3l6,8l6,-8h3v14h-3V10l-6,8l-6,-8v9z"/></vector>
+          EOF
+          npx cap sync android
+
+      - name: Build the APK
+        run: |
+          cd app/android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../../MIZOFOX-Scanner.apk
+
+      - name: Publish the APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: MIZOFOX app build ${{ github.run_number }}
+          files: MIZOFOX-Scanner.apk
