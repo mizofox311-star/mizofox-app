@@ -1,0 +1,81 @@
+name: Build MIZOFOX APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Create the app project
+        run: |
+          mkdir app
+          cd app
+          mkdir www assets
+          echo '<!doctype html><title>MIZOFOX</title><body style="background:#03060c"></body>' > www/index.html
+          cat > package.json <<'EOF'
+          {"name":"mizofox","version":"1.0.0","private":true,"dependencies":{"@capacitor/android":"^6.1.0","@capacitor/cli":"^6.1.0","@capacitor/core":"^6.1.0","@capacitor/local-notifications":"^6.0.0"},"devDependencies":{"@capacitor/assets":"^3.0.5"}}
+          EOF
+          cat > capacitor.config.json <<'EOF'
+          {"appId":"com.mizofox.scanner","appName":"Mizofox Scanner","webDir":"www","server":{"url":"https://mizofox-scanner.pages.dev","androidScheme":"https"},"plugins":{"LocalNotifications":{"smallIcon":"ic_stat_icon","iconColor":"#00E5FF"}},"android":{"backgroundColor":"#03060C"}}
+          EOF
+
+      - name: Get the logo and make the app icons
+        run: |
+          pip install pillow
+          cd app/assets
+          curl -fsSL https://mizofox-scanner.pages.dev/app-icon.jpg -o logo.jpg
+          python3 - <<'PY'
+          from PIL import Image
+          S = 1024
+          logo = Image.open('logo.jpg').convert('RGB').resize((S, S))
+          logo.save('icon-only.png')
+          Image.new('RGBA', (S, S), (3, 16, 24, 255)).save('icon-background.png')
+          fg = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+          fg.paste(logo.resize((614, 614)).convert('RGBA'), (205, 205))
+          fg.save('icon-foreground.png')
+          PY
+
+      - name: Add Android and install tools
+        run: |
+          cd app
+          npm install
+          npx cap add android
+
+      - name: Icons, permissions and notification icon
+        run: |
+          cd app
+          npx capacitor-assets generate --android
+          sed -i 's#<application#<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n    <application#' android/app/src/main/AndroidManifest.xml
+          mkdir -p android/app/src/main/res/drawable
+          cat > android/app/src/main/res/drawable/ic_stat_icon.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M3,19V5h3l6,8l6,-8h3v14h-3V10l-6,8l-6,-8v9z"/></vector>
+          EOF
+          npx cap sync android
+
+      - name: Build the APK
+        run: |
+          cd app/android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../../MIZOFOX-Scanner.apk
+
+      - name: Publish the APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Mizofox Scanner app build ${{ github.run_number }}
+          files: MIZOFOX-Scanner.apk
